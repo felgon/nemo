@@ -34,6 +34,7 @@ nemoCommon_sources = [
   'nemo-error-reporting.c',
   'nemo-extension-config-widget.c',
   'nemo-file-management-properties.c',
+  'nemo-filter-bar.c',
   'nemo-floating-bar.c',
   'nemo-freedesktop-dbus.c',
   'nemo-icon-view-container.c',
@@ -111,6 +112,11 @@ endif
 
 if libexif_enabled
   nemo_deps += libexif
+endif
+
+if gtk_layer_shell_enabled
+  nemo_deps += gtk_layer_shell
+  nemo_deps += wayland_client
 endif
 
 nemo = executable('nemo',

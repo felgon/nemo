@@ -64,10 +64,10 @@ typedef enum {
 	NEMO_FILE_SORT_BY_MTIME,
     NEMO_FILE_SORT_BY_ATIME,
 	NEMO_FILE_SORT_BY_TRASHED_TIME,
-    NEMO_FILE_SORT_BY_BTIME,
-    NEMO_FILE_SORT_BY_SEARCH_RESULT_COUNT
-} NemoFileSortType;	
-
+	NEMO_FILE_SORT_BY_BTIME,
+	NEMO_FILE_SORT_BY_SEARCH_RESULT_COUNT,
+	NEMO_FILE_SORT_BY_EXTENSION
+} NemoFileSortType;
 typedef enum {
 	NEMO_REQUEST_NOT_STARTED,
 	NEMO_REQUEST_IN_PROGRESS,
@@ -456,6 +456,7 @@ int                     nemo_file_compare_for_sort_by_attribute_q   (NemoFile   
 									 gboolean                        reversed,
                                      gpointer                        search_dir);
 gboolean                nemo_file_is_date_sort_attribute_q          (GQuark                          attribute);
+gboolean                nemo_file_attribute_slow_sort               (const gchar                    *sort_attribute);
 
 int                     nemo_file_compare_display_name              (NemoFile                   *file_1,
 									 const char                     *pattern);

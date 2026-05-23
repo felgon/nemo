@@ -31,6 +31,8 @@ nemo_private_sources = [
   'nemo-directory.c',
   'nemo-dnd.c',
   'nemo-entry.c',
+  'fzy-match.c',
+  'nemo-fzy-utils.c',
   'nemo-file-changes-queue.c',
   'nemo-file-conflict-dialog.c',
   'nemo-file-dnd.c',
@@ -96,6 +98,10 @@ endif
 
 if libselinux_enabled
   nemo_private_deps += libselinux
+endif
+
+if gtk_layer_shell_enabled
+  nemo_private_deps += gtk_layer_shell
 endif
 
 nemo_private_lib = static_library('nemo-private',
