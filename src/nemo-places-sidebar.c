@@ -373,6 +373,16 @@ sort_places_func (gconstpointer a,
     return g_utf8_collate (((PlaceInfo *) a)->name, ((PlaceInfo *) b)->name);
 }
 
+static gint
+sort_mounts_func (gconstpointer a,
+                  gconstpointer b)
+{
+    g_autofree gchar *name_a = g_mount_get_name (G_MOUNT (a));
+    g_autofree gchar *name_b = g_mount_get_name (G_MOUNT (b));
+
+    return g_utf8_collate (name_a, name_b);
+}
+
 static PlaceInfo *
 new_place_info (PlaceType place_type,
                 SectionType section_type,
@@ -1254,7 +1264,7 @@ update_places (NemoPlacesSidebar *sidebar)
 
 	g_list_free_full (network_volumes, g_object_unref);
 
-	network_mounts = g_list_reverse (network_mounts);
+	network_mounts = g_list_sort(network_mounts, sort_mounts_func);
 	for (l = network_mounts; l != NULL; l = l->next) {
 		mount = l->data;
 		root = g_mount_get_default_location (mount);
@@ -3587,7 +3597,7 @@ bookmarks_button_release_event_cb (GtkWidget *widget,
 		return TRUE;
 	}
 
-	if (clicked_eject_button (sidebar, &path)) {
+	if (event->button == GDK_BUTTON_PRIMARY && clicked_eject_button (sidebar, &path)) {
 		eject_or_unmount_bookmark (sidebar, path);
 		gtk_tree_path_free (path);
 
@@ -3597,7 +3607,7 @@ bookmarks_button_release_event_cb (GtkWidget *widget,
 	tree_view = GTK_TREE_VIEW (widget);
 	model = gtk_tree_view_get_model (tree_view);
 
-	if (event->button == 1) {
+	if (event->button == GDK_BUTTON_PRIMARY) {
 
 		if (event->window != gtk_tree_view_get_bin_window (tree_view)) {
 			return FALSE;
@@ -3647,7 +3657,7 @@ bookmarks_button_press_event_cb (GtkWidget             *widget,
 		return FALSE;
 	}
 
-	if (event->button == 3) {
+	if (event->button == GDK_BUTTON_SECONDARY) {
 		gtk_tree_model_get (model, &iter,
 				    PLACES_SIDEBAR_COLUMN_ROW_TYPE, &row_type,
 				    -1);
@@ -3655,7 +3665,7 @@ bookmarks_button_press_event_cb (GtkWidget             *widget,
 		if (row_type != PLACES_HEADING) {
 			bookmarks_popup_menu (sidebar, event);
 		}
-	} else if (event->button == 2) {
+	} else if (event->button == GDK_BUTTON_MIDDLE) {
 		NemoWindowOpenFlags flags = 0;
 
 		if (g_settings_get_boolean (nemo_preferences,

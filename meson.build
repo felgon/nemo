@@ -1,7 +1,7 @@
 # Meson build file
 
 # https://github.com/linuxmint/nemo
-project('nemo', 'c', version : '6.6.3', meson_version : '>=0.56.0')
+project('nemo', 'c', version : '6.7.3', meson_version : '>=0.64.0')
 
 # 1. If the library code has changed at all since last release, then increment revision.
 # 2. If any interfaces have been added, then increment current and set revision to 0.
@@ -42,6 +42,12 @@ endforeach
 
 conf.set10('HAVE_MALLOPT', cc.has_function('mallopt', prefix: '#include <malloc.h>'))
 
+
+add_global_arguments([
+    '-Werror=implicit-function-declaration',
+  ],
+  language: 'c',
+)
 
 if not get_option('deprecated_warnings')
   add_global_arguments([
@@ -133,15 +139,15 @@ if libselinux_enabled
 endif
 conf.set('HAVE_SELINUX', libselinux_enabled)
 
-# make sure pango development files are installed
-pango = dependency('pango', version: '>=1.40.0')
-# check for newer pango for necessary workarounds
-new_pango = dependency('pango', version: '>=1.44.0', required: false)
-if new_pango.found()
-  conf.set('HAVE_PANGO_144', true)
-else
-  message('................using pango @0@ instead'.format(new_pango.version()))
+gtk_layer_shell_enabled = get_option('gtk_layer_shell')
+if gtk_layer_shell_enabled
+  gtk_layer_shell = dependency('gtk-layer-shell-0', version: '>=0.8', required: true)
+  wayland_client = dependency('wayland-client', required: true)
+  conf.set('HAVE_GTK_LAYER_SHELL', gtk_layer_shell.found())
 endif
+
+# make sure pango development files are installed
+pango = dependency('pango', version: '>=1.44.0')
 
 enableEmptyView = get_option('empty_view')
 conf.set10('ENABLE_EMPTY_VIEW', enableEmptyView)
@@ -176,7 +182,6 @@ nemo_definitions =  [
 
 po_subdir = join_paths(meson.project_source_root(), 'po')
 
-subdir('install-scripts')
 subdir('cut-n-paste-code/libegg')
 subdir('data')
 subdir('eel')
@@ -191,6 +196,14 @@ subdir('test')
 subdir('docs')
 subdir('action-layout-editor')
 
+# Post-installation actions. Skipped automatically when DESTDIR is set
+# (debian builds, etc.), since the package manager handles them.
+gnome.post_install(
+    glib_compile_schemas: true,
+    gtk_update_icon_cache: true,
+    update_mime_database: true,
+)
+
 message('\n'.join(['',
 '        @0@-@1@'.format(meson.project_name(), meson.project_version()),
 '',
@@ -201,6 +214,7 @@ message('\n'.join(['',
 '    exempi  support:        @0@'.format(exempi_enabled),
 '    Tracker support:        @0@'.format(tracker_enabled),
 '    Wayland support:        @0@'.format(cc.has_header('gdk/gdkwayland.h', dependencies: gtk)),
+'    gtk-layer-shell:        @0@'.format(gtk_layer_shell_enabled),
 '',
 '    nemo-extension documentation: @0@'.format(gtkdoc_enabled),
 '    nemo-extension introspection: @0@'.format(true),

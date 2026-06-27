@@ -302,6 +302,7 @@ void              nemo_icon_container_set_highlighted_for_clipboard (NemoIconCon
 /* operations on all icons */
 void              nemo_icon_container_unselect_all                  (NemoIconContainer  *view);
 void              nemo_icon_container_select_all                    (NemoIconContainer  *view);
+void              nemo_icon_container_select_first                  (NemoIconContainer  *container);
 
 
 /* operations on the selection */
@@ -338,6 +339,10 @@ void              nemo_icon_container_set_is_desktop                (NemoIconCon
 gboolean          nemo_icon_container_get_show_desktop_tooltips     (NemoIconContainer *container);
 void              nemo_icon_container_set_show_desktop_tooltips     (NemoIconContainer *container,
                                                                               gboolean  show_tooltips);
+void              nemo_icon_container_set_filter_highlight          (NemoIconContainer  *container,
+									 const char             *filter_text);
+const char       *nemo_icon_container_get_filter_highlight          (NemoIconContainer  *container);
+
 void              nemo_icon_container_reset_scroll_region           (NemoIconContainer  *container);
 void              nemo_icon_container_set_font                      (NemoIconContainer  *container,
 									 const char             *font); 

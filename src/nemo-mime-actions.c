@@ -1149,6 +1149,7 @@ open_with_dialog_response_cb (GtkDialog *dialog,
 
     gtk_widget_destroy (GTK_WIDGET (dialog));
     g_object_unref (info);
+    nemo_file_unref (file);
 }
 
 static void
@@ -1178,6 +1179,9 @@ run_open_with_dialog (ActivateParametersSpecial *params)
     gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
 
     GtkWidget *chooser = nemo_mime_application_chooser_new (uri, uris, mime_type, ok_button);
+
+    g_free (uri);
+    g_free (mime_type);
 
     GtkWidget *content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
 
@@ -1301,18 +1305,21 @@ untrusted_launcher_response_callback (GtkDialog *dialog,
 				      int response_id,
 				      ActivateParametersSpecial *parameters)
 {
-	GdkScreen *screen;
-	char *uri;
 	GFile *file;
 
 	switch (response_id) {
-	case RESPONSE_RUN:
-		screen = gtk_widget_get_screen (GTK_WIDGET (parameters->parent_window));
-		uri = nemo_file_get_uri (parameters->file);
-		DEBUG ("Launching untrusted launcher %s", uri);
-		nemo_launch_desktop_file (screen, uri, NULL,
-					      parameters->parent_window);
-		g_free (uri);
+	case RESPONSE_DISPLAY:
+		{
+			GAppInfo *app;
+			app = nemo_mime_get_default_application_for_file (parameters->file);
+			if (app != NULL) {
+				GList file_list = { 0 };
+
+				file_list.data = parameters->file;
+				nemo_launch_application (app, &file_list, parameters->parent_window);
+				g_object_unref (app);
+			}
+		}
 		break;
 	case RESPONSE_MARK_TRUSTED:
 		file = nemo_file_get_location (parameters->file);
@@ -1371,7 +1378,7 @@ activate_desktop_file (ActivateParameters *parameters,
 			      NULL);
 
 		gtk_dialog_add_button (GTK_DIALOG (dialog),
-				       _("_Launch Anyway"), RESPONSE_RUN);
+				       _("_Display"), RESPONSE_DISPLAY);
 		if (nemo_file_can_set_permissions (file)) {
 			gtk_dialog_add_button (GTK_DIALOG (dialog),
 					       _("Mark as _Trusted"), RESPONSE_MARK_TRUSTED);
@@ -1713,6 +1720,7 @@ activate_files (ActivateParameters *parameters)
 
                 file_path = g_file_get_path (initial_location);
                 uri = g_strconcat ("admin://", file_path, NULL);
+                g_free (file_path);
             }
 
             final_location = g_file_new_for_uri (uri);
