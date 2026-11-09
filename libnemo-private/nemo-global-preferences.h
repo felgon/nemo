@@ -111,6 +111,7 @@ typedef enum
 #define NEMO_PREFERENCES_SHOW_ICON_VIEW_ICON_TOOLBAR   "show-icon-view-icon-toolbar"
 #define NEMO_PREFERENCES_SHOW_LIST_VIEW_ICON_TOOLBAR   "show-list-view-icon-toolbar"
 #define NEMO_PREFERENCES_SHOW_COMPACT_VIEW_ICON_TOOLBAR   "show-compact-view-icon-toolbar"
+#define NEMO_PREFERENCES_SHOW_LINK_FILENAME   "show-link-filename"
 #define NEMO_PREFERENCES_SHOW_ROOT_WARNING                "show-root-warning"
 #define NEMO_PREFERENCES_OPEN_AS_ROOT_METHOD              "open-as-root-method"
 #define NEMO_PREFERENCES_SHOW_SHOW_THUMBNAILS_TOOLBAR     "show-show-thumbnails-toolbar"
