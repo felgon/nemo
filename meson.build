@@ -1,7 +1,7 @@
 # Meson build file
 
 # https://github.com/linuxmint/nemo
-project('nemo', 'c', version : '6.7.9', meson_version : '>=0.64.0')
+project('nemo', 'c', version : '6.8.3', meson_version : '>=0.64.0')
 
 # 1. If the library code has changed at all since last release, then increment revision.
 # 2. If any interfaces have been added, then increment current and set revision to 0.
@@ -41,6 +41,7 @@ foreach h : check_headers
 endforeach
 
 conf.set10('HAVE_MALLOPT', cc.has_function('mallopt', prefix: '#include <malloc.h>'))
+conf.set10('HAVE_MALLOC_TRIM', cc.has_function('malloc_trim', prefix: '#include <malloc.h>'))
 
 
 add_global_arguments([
@@ -135,10 +136,10 @@ conf.set('HAVE_EXEMPI', exempi_enabled)
 
 video_preview_enabled = get_option('video_preview')
 if video_preview_enabled
-  gstreamer   = dependency('gstreamer-1.0',         version: '>=1.14')
-  gst_pbutils = dependency('gstreamer-pbutils-1.0', version: '>=1.14')
-  gst_app     = dependency('gstreamer-app-1.0',     version: '>=1.14')
-  gst_video   = dependency('gstreamer-video-1.0',   version: '>=1.14')
+  gstreamer   = dependency('gstreamer-1.0',         version: '>=1.22')
+  gst_pbutils = dependency('gstreamer-pbutils-1.0', version: '>=1.22')
+  gst_app     = dependency('gstreamer-app-1.0',     version: '>=1.22')
+  gst_video   = dependency('gstreamer-video-1.0',   version: '>=1.22')
 endif
 conf.set('HAVE_GSTREAMER', video_preview_enabled)
 
