@@ -31,12 +31,16 @@
 #include <gst/gst.h>
 #include <gst/pbutils/pbutils.h>
 #include <glib/gi18n.h>
+#include <math.h>
 
 #define DEBUG_FLAG NEMO_DEBUG_PREVIEW_PANE
 #include "nemo-debug.h"
 
 #define POSITION_UPDATE_MS 200
 #define AUTOPLAY_DELAY_MS 500
+#define SEEK_STEP_MIN_SECONDS 5
+#define SEEK_STEP_MAX_SECONDS 30
+#define SEEK_TIMEOUT_MS 500
 #define POSTER_PLAY_ICON_MARGIN 8
 
 #define PAGE_POSTER  "poster"
@@ -70,11 +74,28 @@ typedef struct {
     guint autoplay_timeout_id;
     gint64 duration;
     gint64 probed_duration;
+    /* What the user asked for: a flushing seek drops a playing pipeline to PAUSED while it prerolls */
     gboolean playing;
     gboolean scrubbing;
+    gboolean scrubbed;
+    gboolean has_video;
+
+    /* A seek is in flight while seek_timeout_id is set. Requests made meanwhile
+     * are coalesced: only the latest target is kept, and it's sent on ASYNC_DONE
+     * or after SEEK_TIMEOUT_MS */
+    guint seek_timeout_id;
+    gint64 queued_seek;
+    GstSeekFlags queued_seek_flags;
 } NemoPreviewVideoPrivate;
 
 G_DEFINE_TYPE_WITH_PRIVATE (NemoPreviewVideo, nemo_preview_video, GTK_TYPE_BOX)
+
+enum {
+    RELEASE_FOCUS,
+    LAST_SIGNAL
+};
+
+static guint signals[LAST_SIGNAL];
 
 gboolean
 nemo_preview_video_available (void)
@@ -87,7 +108,7 @@ nemo_preview_video_available (void)
             GstElement *sink, *playbin;
 
             sink = gst_element_factory_make ("gtksink", NULL);
-            playbin = gst_element_factory_make ("playbin", NULL);
+            playbin = gst_element_factory_make ("playbin3", NULL);
             available = sink != NULL && playbin != NULL;
 
             if (sink != NULL) {
@@ -99,7 +120,7 @@ nemo_preview_video_available (void)
             if (playbin != NULL) {
                 gst_object_unref (gst_object_ref_sink (playbin));
             } else {
-                DEBUG ("No playbin element (gstreamer1.0-plugins-base), media playback disabled");
+                DEBUG ("No playbin3 element (gstreamer1.0-plugins-base), media playback disabled");
             }
         }
 
@@ -142,7 +163,12 @@ update_duration (NemoPreviewVideo *video)
     }
 
     if (priv->duration > 0) {
-        gtk_range_set_range (GTK_RANGE (priv->seek_scale), 0, (gdouble) priv->duration / GST_SECOND);
+        gdouble seconds = (gdouble) priv->duration / GST_SECOND;
+        gdouble step = CLAMP (round (seconds / 100), SEEK_STEP_MIN_SECONDS, SEEK_STEP_MAX_SECONDS);
+
+        gtk_range_set_range (GTK_RANGE (priv->seek_scale), 0, seconds);
+        /* A scale's mouse wheel moves a page per notch */
+        gtk_range_set_increments (GTK_RANGE (priv->seek_scale), step, step * 10);
         gtk_widget_set_sensitive (priv->seek_scale, TRUE);
     }
 }
@@ -162,7 +188,7 @@ refresh_position (NemoPreviewVideo *video)
     }
 
     if (gst_element_query_position (priv->pipeline, GST_FORMAT_TIME, &position)) {
-        if (!priv->scrubbing) {
+        if (!priv->scrubbing && priv->seek_timeout_id == 0) {
             gtk_range_set_value (GTK_RANGE (priv->seek_scale), (gdouble) position / GST_SECOND);
         }
         update_time_label (video, position);
@@ -279,6 +305,15 @@ stop_pipeline (NemoPreviewVideo *video)
 
     priv->duration = priv->probed_duration;
     priv->scrubbing = FALSE;
+    priv->scrubbed = FALSE;
+    g_clear_handle_id (&priv->seek_timeout_id, g_source_remove);
+    priv->queued_seek = -1;
+    priv->has_video = FALSE;
+
+    /* Must happen before the scale goes insensitive below: GTK would just unset the window's focus widget */
+    if (gtk_widget_is_focus (priv->seek_scale)) {
+        g_signal_emit (video, signals[RELEASE_FOCUS], 0);
+    }
 
     gtk_range_set_range (GTK_RANGE (priv->seek_scale), 0, 1);
     gtk_range_set_value (GTK_RANGE (priv->seek_scale), 0);
@@ -286,6 +321,75 @@ stop_pipeline (NemoPreviewVideo *video)
     update_time_label (video, 0);
 
     gtk_stack_set_visible_child_name (GTK_STACK (priv->stack), PAGE_POSTER);
+}
+
+/* Audio-only files keep showing the poster */
+static void
+update_video_page (NemoPreviewVideo *video)
+{
+    NemoPreviewVideoPrivate *priv = nemo_preview_video_get_instance_private (video);
+    GstState state;
+
+    gst_element_get_state (priv->pipeline, &state, NULL, 0);
+
+    if (priv->has_video && state >= GST_STATE_PAUSED) {
+        gtk_stack_set_visible_child_name (GTK_STACK (priv->stack), PAGE_VIDEO);
+    }
+}
+
+static void seek_done (NemoPreviewVideo *video);
+
+static gboolean
+seek_timeout (gpointer user_data)
+{
+    NemoPreviewVideo *video = NEMO_PREVIEW_VIDEO (user_data);
+    NemoPreviewVideoPrivate *priv = nemo_preview_video_get_instance_private (video);
+
+    priv->seek_timeout_id = 0;
+    DEBUG ("No ASYNC_DONE %d ms after seek, no longer waiting for it", SEEK_TIMEOUT_MS);
+    seek_done (video);
+
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean
+seek_to (NemoPreviewVideo *video,
+         gint64            position,
+         GstSeekFlags      flags)
+{
+    NemoPreviewVideoPrivate *priv = nemo_preview_video_get_instance_private (video);
+
+    if (priv->seek_timeout_id != 0) {
+        DEBUG ("Seek to %" GST_TIME_FORMAT " queued behind the one in flight", GST_TIME_ARGS (position));
+        priv->queued_seek = position;
+        priv->queued_seek_flags = flags;
+        return TRUE;
+    }
+
+    priv->queued_seek = -1;
+
+    if (!gst_element_seek_simple (priv->pipeline, GST_FORMAT_TIME,
+                                  GST_SEEK_FLAG_FLUSH | flags, position)) {
+        DEBUG ("Seek to %" GST_TIME_FORMAT " failed", GST_TIME_ARGS (position));
+        return FALSE;
+    }
+
+    DEBUG ("Seek to %" GST_TIME_FORMAT " issued (flags 0x%x)", GST_TIME_ARGS (position), flags);
+    priv->seek_timeout_id = g_timeout_add (SEEK_TIMEOUT_MS, seek_timeout, video);
+
+    return TRUE;
+}
+
+static void
+seek_done (NemoPreviewVideo *video)
+{
+    NemoPreviewVideoPrivate *priv = nemo_preview_video_get_instance_private (video);
+
+    g_clear_handle_id (&priv->seek_timeout_id, g_source_remove);
+
+    if (priv->queued_seek < 0 || !seek_to (video, priv->queued_seek, priv->queued_seek_flags)) {
+        refresh_position (video);
+    }
 }
 
 static gboolean
@@ -322,27 +426,33 @@ bus_callback (GstBus     *bus,
             gst_message_parse_state_changed (message, NULL, &new_state, NULL);
 
             if (new_state >= GST_STATE_PAUSED) {
-                gint n_video = 0;
-
-                /* Audio-only files keep showing the poster */
-                g_object_get (priv->pipeline, "n-video", &n_video, NULL);
-
-                if (n_video > 0) {
-                    gtk_stack_set_visible_child_name (GTK_STACK (priv->stack), PAGE_VIDEO);
-                }
-
+                update_video_page (video);
                 update_duration (video);
             }
-
-            set_playing (video, new_state == GST_STATE_PLAYING);
         }
         break;
+    /* Use the selection, not the collection: streams with no usable decoder are dropped from it */
+    case GST_MESSAGE_STREAMS_SELECTED: {
+        guint i, n = gst_message_streams_selected_get_size (message);
+
+        priv->has_video = FALSE;
+
+        for (i = 0; i < n && !priv->has_video; i++) {
+            GstStream *stream = gst_message_streams_selected_get_stream (message, i);
+
+            priv->has_video = (gst_stream_get_stream_type (stream) & GST_STREAM_TYPE_VIDEO) != 0;
+            gst_object_unref (stream);
+        }
+
+        update_video_page (video);
+        break;
+    }
     case GST_MESSAGE_DURATION_CHANGED:
         priv->duration = 0;
         update_duration (video);
         break;
     case GST_MESSAGE_ASYNC_DONE:
-        refresh_position (video);
+        seek_done (video);
         break;
     case GST_MESSAGE_WARNING: {
         GError *error = NULL;
@@ -385,7 +495,7 @@ ensure_pipeline (NemoPreviewVideo *video)
 
     gtk_stack_set_visible_child_name (GTK_STACK (priv->stack), PAGE_POSTER);
 
-    priv->pipeline = gst_element_factory_make ("playbin", NULL);
+    priv->pipeline = gst_element_factory_make ("playbin3", NULL);
     g_object_set (priv->pipeline,
                   "uri", uri,
                   "video-sink", priv->sink,   /* reused: its widget is a stack page */
@@ -413,7 +523,8 @@ nemo_preview_video_toggle_playback (NemoPreviewVideo *video)
     }
 
     ensure_pipeline (video);
-    gst_element_set_state (priv->pipeline, priv->playing ? GST_STATE_PAUSED : GST_STATE_PLAYING);
+    set_playing (video, !priv->playing);
+    gst_element_set_state (priv->pipeline, priv->playing ? GST_STATE_PLAYING : GST_STATE_PAUSED);
 
     return TRUE;
 }
@@ -470,6 +581,9 @@ seek_scale_change_value (GtkRange      *range,
 {
     NemoPreviewVideo *video = NEMO_PREVIEW_VIDEO (user_data);
     NemoPreviewVideoPrivate *priv = nemo_preview_video_get_instance_private (video);
+    /* Keyframe seeks are cheap but land on the keyframe before the target, which can be
+     * seconds off; only use them while the slider is held, and seek exactly on release */
+    GstSeekFlags flags = priv->scrubbing ? GST_SEEK_FLAG_KEY_UNIT : 0;
     gint64 position;
 
     if (priv->pipeline == NULL || priv->duration <= 0) {
@@ -479,13 +593,27 @@ seek_scale_change_value (GtkRange      *range,
     position = CLAMP (value, 0, (gdouble) priv->duration / GST_SECOND) * GST_SECOND;
 
     /* Stopping the event keeps the slider where playback actually is */
-    if (!gst_element_seek_simple (priv->pipeline, GST_FORMAT_TIME,
-                                  GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT, position)) {
-        DEBUG ("Seek to %" GST_TIME_FORMAT " failed", GST_TIME_ARGS (position));
+    if (!seek_to (video, position, flags)) {
         return GDK_EVENT_STOP;
     }
 
+    priv->scrubbed = priv->scrubbing;
     update_time_label (video, position);
+
+    return GDK_EVENT_PROPAGATE;
+}
+
+/* Key events go to the focused scale, so the view's Space handling never sees them */
+static gboolean
+seek_scale_key_press (GtkWidget   *widget,
+                      GdkEventKey *event,
+                      gpointer     user_data)
+{
+    if (event->keyval == GDK_KEY_space &&
+        (event->state & gtk_accelerator_get_default_mod_mask ()) == 0) {
+        nemo_preview_video_toggle_playback (NEMO_PREVIEW_VIDEO (user_data));
+        return GDK_EVENT_STOP;
+    }
 
     return GDK_EVENT_PROPAGATE;
 }
@@ -507,9 +635,19 @@ seek_scale_button_release (GtkWidget      *widget,
                            GdkEventButton *event,
                            gpointer        user_data)
 {
-    NemoPreviewVideoPrivate *priv = nemo_preview_video_get_instance_private (NEMO_PREVIEW_VIDEO (user_data));
+    NemoPreviewVideo *video = NEMO_PREVIEW_VIDEO (user_data);
+    NemoPreviewVideoPrivate *priv = nemo_preview_video_get_instance_private (video);
+    gint64 position = gtk_range_get_value (GTK_RANGE (widget)) * GST_SECOND;
 
     priv->scrubbing = FALSE;
+
+    if (priv->scrubbed) {
+        priv->scrubbed = FALSE;
+
+        if (!seek_to (video, position, 0)) {
+            refresh_position (video);
+        }
+    }
 
     return GDK_EVENT_PROPAGATE;
 }
@@ -558,11 +696,12 @@ create_controls (NemoPreviewVideo *video)
     g_signal_connect (priv->play_button, "clicked", G_CALLBACK (play_button_clicked), video);
     gtk_box_pack_start (GTK_BOX (box), priv->play_button, FALSE, FALSE, 0);
 
-    priv->seek_scale = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL, 0, 1, 1);
+    priv->seek_scale = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL, 0, 1, SEEK_STEP_MIN_SECONDS);
     gtk_scale_set_draw_value (GTK_SCALE (priv->seek_scale), FALSE);
     gtk_widget_set_sensitive (priv->seek_scale, FALSE);
-    gtk_widget_set_can_focus (priv->seek_scale, FALSE);
+    gtk_widget_set_can_focus (priv->seek_scale, TRUE);
     g_signal_connect (priv->seek_scale, "change-value", G_CALLBACK (seek_scale_change_value), video);
+    g_signal_connect (priv->seek_scale, "key-press-event", G_CALLBACK (seek_scale_key_press), video);
     g_signal_connect (priv->seek_scale, "button-press-event", G_CALLBACK (seek_scale_button_press), video);
     g_signal_connect (priv->seek_scale, "button-release-event", G_CALLBACK (seek_scale_button_release), video);
     gtk_box_pack_start (GTK_BOX (box), priv->seek_scale, TRUE, TRUE, 0);
@@ -600,10 +739,13 @@ nemo_preview_video_init (NemoPreviewVideo *video)
     NemoPreviewVideoPrivate *priv = nemo_preview_video_get_instance_private (video);
     g_autofree gchar *message = NULL;
 
+    priv->queued_seek = -1;
+
     priv->sink = gst_object_ref_sink (gst_element_factory_make ("gtksink", NULL));
     /* Leaves the letterbox area unpainted so the themed background shows instead of black */
     g_object_set (priv->sink, "ignore-alpha", FALSE, NULL);
     g_object_get (priv->sink, "widget", &priv->sink_widget, NULL);
+    g_object_set (priv->sink_widget, "margin", NEMO_PREVIEW_IMAGE_BORDER, NULL);
 
     gtk_widget_add_events (priv->sink_widget, GDK_BUTTON_PRESS_MASK);
     g_signal_connect (priv->sink_widget, "button-press-event",
@@ -647,6 +789,13 @@ static void
 nemo_preview_video_class_init (NemoPreviewVideoClass *klass)
 {
     G_OBJECT_CLASS (klass)->dispose = nemo_preview_video_dispose;
+
+    /* Emitted before the focused seek bar goes insensitive, so the owner can move focus somewhere useful */
+    signals[RELEASE_FOCUS] = g_signal_new ("release-focus",
+                                           G_TYPE_FROM_CLASS (klass),
+                                           G_SIGNAL_RUN_LAST,
+                                           0, NULL, NULL, NULL,
+                                           G_TYPE_NONE, 0);
 }
 
 GtkWidget *

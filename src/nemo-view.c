@@ -7481,6 +7481,19 @@ action_open_in_terminal_callback(GtkAction *action,
     }
 }
 
+static char *
+escape_percents (const char *str)
+{
+	char **parts;
+	char *escaped;
+
+	parts = g_strsplit (str, "%", -1);
+	escaped = g_strjoinv ("%%", parts);
+	g_strfreev (parts);
+
+	return escaped;
+}
+
 static void
 invoke_external_bulk_rename_utility (NemoView *view,
 				     GList *selection)
@@ -7488,31 +7501,27 @@ invoke_external_bulk_rename_utility (NemoView *view,
 	GString *cmd;
 	char *parameter;
 	char *quoted_parameter;
+	char *escaped_parameter;
 	char *bulk_rename_tool;
 	GList *walk;
 	NemoFile *file;
 
 	/* assemble command line */
 	bulk_rename_tool = get_bulk_rename_tool ();
-	cmd = g_string_new (bulk_rename_tool);
+	escaped_parameter = escape_percents (bulk_rename_tool);
+	cmd = g_string_new (escaped_parameter);
+	g_free (escaped_parameter);
 	g_free (bulk_rename_tool);
 	for (walk = selection; walk; walk = walk->next) {
 		file = walk->data;
 		parameter = nemo_file_get_uri (file);
 		quoted_parameter = g_shell_quote (parameter);
+		escaped_parameter = escape_percents (quoted_parameter);
 		g_free (parameter);
-		cmd = g_string_append (cmd, " ");
-		cmd = g_string_append (cmd, quoted_parameter);
 		g_free (quoted_parameter);
-	}
-
-        guint i = 0;
-
-	// Escape percents
-	for (i = 0; i < strlen(cmd->str); i++) {
-		if (cmd->str[i] == '%') {
-			g_string_insert_c(cmd, i++, '%');
-		}
+		cmd = g_string_append (cmd, " ");
+		cmd = g_string_append (cmd, escaped_parameter);
+		g_free (escaped_parameter);
 	}
 
 	/* spawning and error handling */
@@ -11068,6 +11077,38 @@ nemo_view_set_filter_text (NemoView *view, const char *text)
     g_signal_emit (view, signals[ACTIVATE_FILTER], 0, view->details->filter_text);
 
     view->details->filter_debounce_id = g_timeout_add (100, apply_filter_debounce_cb, view);
+}
+
+/**
+ * nemo_view_flush_filter_for_key:
+ * @view: a #NemoView
+ * @event: a key press about to be handled
+ *
+ * Applies a filter that's still waiting out its debounce, unless @event
+ * is only going to change the filter text again. Keeps keys that act on
+ * the view's contents or selection from racing ahead of the typed text.
+ */
+void
+nemo_view_flush_filter_for_key (NemoView *view, GdkEventKey *event)
+{
+    g_return_if_fail (NEMO_IS_VIEW (view));
+
+    if (view->details->filter_debounce_id == 0 || event->is_modifier) {
+        return;
+    }
+
+    if (event->keyval == GDK_KEY_BackSpace || event->keyval == GDK_KEY_Escape) {
+        return;
+    }
+
+    if ((event->state & (GDK_CONTROL_MASK | GDK_MOD1_MASK)) == 0 &&
+        g_unichar_isprint (gdk_keyval_to_unicode (event->keyval))) {
+        return;
+    }
+
+    g_source_remove (view->details->filter_debounce_id);
+    apply_filter_debounce_cb (view);
+    update_menus_if_pending (view);
 }
 
 void

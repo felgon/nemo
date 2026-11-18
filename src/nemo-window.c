@@ -91,7 +91,6 @@ static void side_pane_id_changed                    (NemoWindow            *wind
 static void toggle_menubar                          (NemoWindow            *window,
                                                      gint                   action);
 static void nemo_window_reload                      (NemoWindow            *window);
-static void scale_factor_changed_callback           (NemoWindow            *window);
 
 /* Sanity check: highest mouse button value I could find was 14. 5 is our
  * lower threshold (well-documented to be the one of the button events for the
@@ -807,11 +806,6 @@ nemo_window_constructed (GObject *self)
     if (g_settings_get_boolean (nemo_preferences, NEMO_PREFERENCES_START_WITH_DUAL_PANE) &&
         !window->details->disable_chrome)
         nemo_window_split_view_on (window);
-
-    g_signal_connect_swapped (GTK_WINDOW (window),
-                              "notify::scale-factor",
-                              G_CALLBACK (scale_factor_changed_callback),
-                              window);
 }
 
 static void
@@ -1274,6 +1268,10 @@ nemo_window_key_press_event (GtkWidget *widget,
       if ((event->keyval == GDK_KEY_semicolon || event->keyval == GDK_KEY_period) && (event->state & GDK_CONTROL_MASK)) {
           return FALSE;
       }
+
+    if (view != NULL) {
+        nemo_view_flush_filter_for_key (view, event);
+    }
 
 	if (view != NULL && nemo_view_get_is_renaming (view) && event->keyval != GDK_KEY_F2) {
 		/* if we're renaming, just forward the event to the
@@ -2028,6 +2026,16 @@ nemo_window_get_active_slot (NemoWindow *window)
 	return window->details->active_pane->active_slot;
 }
 
+void
+nemo_window_grab_focus (NemoWindow *window)
+{
+    NemoWindowSlot *slot = nemo_window_get_active_slot (window);
+
+    if (slot != NULL && slot->content_view != NULL) {
+        nemo_view_grab_focus (slot->content_view);
+    }
+}
+
 NemoWindowSlot *
 nemo_window_get_extra_slot (NemoWindow *window)
 {
@@ -2137,14 +2145,6 @@ static void
 nemo_window_reload (NemoWindow *window)
 {
     nemo_window_slot_queue_reload (nemo_window_get_active_slot (window), TRUE);
-}
-
-/* Thumbnails are generated at a fixed size and scaled when drawn, so there's no
- * need to regenerate them here. */
-static void
-scale_factor_changed_callback (NemoWindow *window)
-{
-    nemo_window_slot_queue_reload (nemo_window_get_active_slot (window), FALSE);
 }
 
 static gboolean
@@ -3035,8 +3035,8 @@ nemo_window_preview_pane_off_internal (NemoWindow *window,
     window->details->show_preview_pane = FALSE;
     window->details->preview_pane_width_set = FALSE;
 
-    gtk_widget_hide (window->details->preview_pane);
     nemo_preview_pane_set_selection (NEMO_PREVIEW_PANE (window->details->preview_pane), NULL);
+    gtk_widget_hide (window->details->preview_pane);
 
     /* Forget the old position; it is restored from pane-width when the pane is shown again */
     g_object_set (G_OBJECT (window->details->secondary_paned),
